@@ -10,9 +10,6 @@ results.
 - The dashboard (`uvicorn dashboard.main:app`) reads that folder and renders a live, auto-
   refreshing view for a SOC analyst.
 
-See [claude.md](claude.md) for the full project map and [docs/](docs/) for architecture and
-design details. Quickstart: [docs/setup.md](docs/setup.md).
-
 ```powershell
 python -m venv venv
 venv\Scripts\Activate.ps1
@@ -24,5 +21,3 @@ uvicorn dashboard.main:app --reload         # terminal 2
 ```
 
 Open `http://localhost:8000/`.
-
-DOC: REMOVED
