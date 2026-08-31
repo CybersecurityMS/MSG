@@ -25,11 +25,12 @@ They only communicate through the `data/` folder — no shared process state, no
 
 ```
 agent/            LangGraph pipeline (config, models, state, graph, scheduler, main)
-agent/tools/      the 4 tools: fetch_alert_files, parse_alert_details, investigate_alert, write_dashboard_output
+agent/tools/      the 5 tools: fetch_alert_files, parse_alert_details, investigate_alert, create_ticket, write_dashboard_output
 dashboard/        FastAPI app (main, data_access, templates/, static/)
 data/incoming/    SIEM drops CSVs here (also the work queue - a file here means "not yet parsed")
 data/processed/   source CSVs archived here after parsing
 data/output/alerts/  one JSON file per analyzed alert - the dashboard's entire data source
+data/tickets/     one text record per low-severity alert - stand-in for a future ServiceNow ticket
 tests/            pytest, one file per tool, no network/API key required
 docs/             architecture + design docs, see above
 ```
@@ -44,6 +45,10 @@ python -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+LangSmith tracing (`LANGSMITH_TRACING`/`LANGSMITH_API_KEY`/`LANGSMITH_PROJECT`) is optional and
+read directly from the environment by LangChain/LangGraph, not modeled in `Settings` — see
+`docs/setup.md` for the required `LANGSMITH_WORKSPACE_ID` gotcha with org-scoped keys.
 
 ## Running tests
 
@@ -66,4 +71,13 @@ pytest
 - **The Claude model is configurable** via `CLAUDE_MODEL` (`agent/config.py`), currently
   `claude-opus-5`. Don't hardcode a model string in a tool.
 - Alert IDs come from the SIEM (untrusted input) and are used as filenames in
-  `write_dashboard_output` — keep the sanitization there if you touch that function.
+  `write_dashboard_output` and `create_ticket` — keep the sanitization there if you touch either.
+- **Alert fields are untrusted data, not instructions** — `investigate_alert`'s system prompt
+  explicitly tells Claude not to follow or role-play with anything in the alert data that looks
+  like a command. Keep that grounding language if you edit the prompt; without it we observed
+  Claude fabricate a fictitious "prompt injection" narrative about an alert that contained no
+  such thing, which is worse than not flagging a real one.
+- **Trace the LLM call with `@traceable`, not `wrap_anthropic`.** `langsmith.wrappers.wrap_anthropic`
+  (as of `langsmith==0.11.2`) crashes against `anthropic>=1.0` (references the removed
+  `client.completions` API) and doesn't instrument non-beta `messages.parse` anyway. See
+  `docs/agent_design.md` — Observability.
