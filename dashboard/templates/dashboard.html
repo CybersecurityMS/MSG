@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="topbar">
+  <div class="brand">
+    <span class="mark">SOC AI</span>
+    <span class="tag">Alert Triage</span>
+  </div>
+  <div class="status-cluster">
+    <span class="live-pill"><span class="pulse"></span><span id="last-updated">Loading&hellip;</span></span>
+    <button id="refresh-btn" title="Refresh now" aria-label="Refresh now">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="page">
+  <section class="kpi-row" id="kpi-row">
+    <div class="kpi accent-neutral">
+      <div class="label"><span class="dot neutral"></span>Total Alerts</div>
+      <div class="value" id="stat-total">&mdash;</div>
+    </div>
+    <div class="kpi accent-neutral">
+      <div class="label"><span class="dot neutral"></span>Average Score</div>
+      <div class="value" id="stat-avg">&mdash;</div>
+    </div>
+    <div class="kpi accent-high">
+      <div class="label"><span class="dot high"></span>High</div>
+      <div class="value" id="stat-level-3">&mdash;</div>
+    </div>
+    <div class="kpi accent-medium">
+      <div class="label"><span class="dot medium"></span>Medium</div>
+      <div class="value" id="stat-level-2">&mdash;</div>
+    </div>
+    <div class="kpi accent-low">
+      <div class="label"><span class="dot low"></span>Low</div>
+      <div class="value" id="stat-level-1">&mdash;</div>
+    </div>
+    <div class="kpi accent-high">
+      <div class="label"><span class="dot high"></span>Needs Review</div>
+      <div class="value" id="stat-errors">&mdash;</div>
+    </div>
+  </section>
+
+  <section class="charts-row">
+    <div class="card chart-card">
+      <h2>Alerts by Level</h2>
+      <canvas id="levelChart"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h2>Score Distribution</h2>
+      <canvas id="scoreChart"></canvas>
+    </div>
+  </section>
+
+  <section>
+    <div class="toolbar">
+      <div class="segmented" id="filter-row">
+        <button data-level="all" class="active">All <span class="count" id="count-all"></span></button>
+        <button data-level="3">High <span class="count" id="count-3"></span></button>
+        <button data-level="2">Medium <span class="count" id="count-2"></span></button>
+        <button data-level="1">Low <span class="count" id="count-1"></span></button>
+      </div>
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search-input" type="text" placeholder="Search alert ID, source, summary&hellip;">
+      </div>
+    </div>
+
+    <div class="card table-card" id="table-card">
+      <div class="table-scroll">
+        <table class="alerts-table" id="alerts-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="alert_level">Level <span class="arrow">&#9662;</span></th>
+              <th class="sortable" data-sort="score">Score <span class="arrow">&#9662;</span></th>
+              <th>Alert</th>
+              <th>Summary</th>
+              <th>Recommended Action</th>
+              <th class="sortable sort-active" data-sort="analyzed_at">Analyzed <span class="arrow">&#9662;</span></th>
+            </tr>
+          </thead>
+          <tbody id="alerts-tbody"></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination">
+        <span id="pagination-summary"></span>
+        <div class="pager">
+          <button id="prev-page">Prev</button>
+          <button id="next-page">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card empty-state" id="empty-state" style="display: none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg>
+      <h3>No analyzed alerts yet</h3>
+      <p>Drop a SIEM export CSV into the incoming folder — results appear here automatically after the agent's next cycle.</p>
+    </div>
+  </section>
+</div>
+
+<script>
+const LEVEL_META = {
+  1: { label: "Low", cls: "low" },
+  2: { label: "Medium", cls: "medium" },
+  3: { label: "High", cls: "high" },
+};
+const cssVar = (name, fallback) => (getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback);
+
+let allAlerts = [];
+let currentFilter = "all";
+let searchQuery = "";
+let sortKey = "analyzed_at";
+let sortDir = "desc";
+let page = 1;
+const PAGE_SIZE = 15;
+let levelChart, scoreChart;
+
+function fmtDate(iso) {
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function timeAgo(iso) {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const diffSec = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return `${Math.round(diffHr / 24)}d ago`;
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderStats(stats) {
+  document.getElementById("stat-total").textContent = stats.total;
+  document.getElementById("stat-avg").textContent = stats.average_score;
+  document.getElementById("stat-level-3").textContent = stats.level_counts["3"] ?? stats.level_counts[3] ?? 0;
+  document.getElementById("stat-level-2").textContent = stats.level_counts["2"] ?? stats.level_counts[2] ?? 0;
+  document.getElementById("stat-level-1").textContent = stats.level_counts["1"] ?? stats.level_counts[1] ?? 0;
+  document.getElementById("stat-errors").textContent = stats.error_count;
+
+  document.getElementById("count-all").textContent = stats.total;
+  document.getElementById("count-3").textContent = stats.level_counts["3"] ?? stats.level_counts[3] ?? 0;
+  document.getElementById("count-2").textContent = stats.level_counts["2"] ?? stats.level_counts[2] ?? 0;
+  document.getElementById("count-1").textContent = stats.level_counts["1"] ?? stats.level_counts[1] ?? 0;
+}
+
+function chartTextStyle() {
+  return { color: cssVar("--muted", "#5B6678"), font: { family: "IBM Plex Mono", size: 11 } };
+}
+
+function renderLevelChart(stats) {
+  const text = chartTextStyle();
+  const grid = cssVar("--gridline", "#E1E6ED");
+  const counts = [1, 2, 3].map((lvl) => stats.level_counts[lvl] ?? stats.level_counts[String(lvl)] ?? 0);
+  const colors = [cssVar("--low-line", "#128F3F"), cssVar("--medium-line", "#B87800"), cssVar("--high-line", "#B23434")];
+  const data = {
+    labels: [1, 2, 3].map((lvl) => LEVEL_META[lvl].label),
+    datasets: [{ data: counts, backgroundColor: colors, borderRadius: 4, maxBarThickness: 46 }],
+  };
+  const options = {
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: text, grid: { display: false } },
+      y: { beginAtZero: true, ticks: { precision: 0, ...text }, grid: { color: grid } },
+    },
+  };
+  if (levelChart) { levelChart.data = data; levelChart.options = options; levelChart.update(); return; }
+  levelChart = new Chart(document.getElementById("levelChart"), { type: "bar", data, options });
+}
+
+function renderScoreChart(alerts) {
+  const text = chartTextStyle();
+  const grid = cssVar("--gridline", "#E1E6ED");
+  const bins = [0, 0, 0, 0, 0];
+  for (const a of alerts) bins[Math.min(4, Math.floor(a.score / 20))] += 1;
+  const data = {
+    labels: ["0-20", "20-40", "40-60", "60-80", "80-100"],
+    datasets: [{ data: bins, backgroundColor: cssVar("--sequential", "#2A78D6"), borderRadius: 4, maxBarThickness: 40 }],
+  };
+  const options = {
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: text, grid: { display: false } },
+      y: { beginAtZero: true, ticks: { precision: 0, ...text }, grid: { color: grid } },
+    },
+  };
+  if (scoreChart) { scoreChart.data = data; scoreChart.options = options; scoreChart.update(); return; }
+  scoreChart = new Chart(document.getElementById("scoreChart"), { type: "bar", data, options });
+}
+
+function getFiltered() {
+  let rows = currentFilter === "all" ? allAlerts : allAlerts.filter((a) => String(a.alert_level) === currentFilter);
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    rows = rows.filter((a) =>
+      [a.alert_id, a.source_file, a.summary, a.recommended_action].some((v) => (v || "").toLowerCase().includes(q))
+    );
+  }
+  return rows;
+}
+
+function getSorted(rows) {
+  const sorted = [...rows].sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (sortKey === "analyzed_at") { av = new Date(av).getTime(); bv = new Date(bv).getTime(); }
+    if (av < bv) return sortDir === "asc" ? -1 : 1;
+    if (av > bv) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
+  return sorted;
+}
+
+function renderTable() {
+  const filtered = getSorted(getFiltered());
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  page = Math.min(page, totalPages);
+  const start = (page - 1) * PAGE_SIZE;
+  const pageRows = filtered.slice(start, start + PAGE_SIZE);
+
+  document.getElementById("table-card").style.display = total ? "block" : "none";
+  document.getElementById("empty-state").style.display = total ? "none" : "block";
+
+  const tbody = document.getElementById("alerts-tbody");
+  tbody.innerHTML = pageRows.map((a) => {
+    const meta = LEVEL_META[a.alert_level];
+    const errorFlag = a.error ? `<div class="error-flag">${escapeHtml(a.error)}</div>` : "";
+    const pct = Math.max(2, Math.min(100, a.score));
+    return `
+      <tr class="${a.error ? "has-error" : ""}">
+        <td><span class="badge level-${a.alert_level}"><span class="dot ${meta.cls}"></span>${meta.label}</span></td>
+        <td>
+          <div class="score-wrap">
+            <span class="score-num">${a.score.toFixed(1)}</span>
+            <span class="score-bar"><span style="width:${pct}%"></span></span>
+          </div>
+        </td>
+        <td>
+          <div class="cell-primary">${escapeHtml(a.alert_id)}</div>
+          <div class="cell-secondary">${escapeHtml(a.source_file)}</div>
+        </td>
+        <td><div class="clamp-2" title="${escapeHtml(a.summary)}">${escapeHtml(a.summary)}</div>${errorFlag}</td>
+        <td><div class="clamp-2" title="${escapeHtml(a.recommended_action)}">${escapeHtml(a.recommended_action)}</div></td>
+        <td class="time-cell" title="${escapeHtml(fmtDate(a.analyzed_at))}">${timeAgo(a.analyzed_at)}</td>
+      </tr>`;
+  }).join("");
+
+  document.getElementById("pagination-summary").textContent = total
+    ? `Showing ${start + 1}–${Math.min(start + PAGE_SIZE, total)} of ${total}`
+    : "";
+  document.getElementById("prev-page").disabled = page <= 1;
+  document.getElementById("next-page").disabled = page >= totalPages;
+}
+
+async function refresh() {
+  const btn = document.getElementById("refresh-btn");
+  btn.classList.add("spinning");
+  try {
+    const [alertsRes, statsRes] = await Promise.all([fetch("/api/alerts"), fetch("/api/stats")]);
+    allAlerts = await alertsRes.json();
+    const stats = await statsRes.json();
+
+    renderStats(stats);
+    renderLevelChart(stats);
+    renderScoreChart(allAlerts);
+    renderTable();
+    document.getElementById("last-updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } finally {
+    setTimeout(() => btn.classList.remove("spinning"), 400);
+  }
+}
+
+document.getElementById("filter-row").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-level]");
+  if (!btn) return;
+  currentFilter = btn.dataset.level;
+  page = 1;
+  document.querySelectorAll("#filter-row button").forEach((b) => b.classList.toggle("active", b === btn));
+  renderTable();
+});
+
+let searchTimer;
+document.getElementById("search-input").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { searchQuery = e.target.value.trim(); page = 1; renderTable(); }, 150);
+});
+
+document.querySelectorAll("th.sortable").forEach((th) => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) { sortDir = sortDir === "asc" ? "desc" : "asc"; }
+    else { sortKey = key; sortDir = key === "analyzed_at" || key === "score" || key === "alert_level" ? "desc" : "asc"; }
+    document.querySelectorAll("th.sortable").forEach((el) => {
+      el.classList.toggle("sort-active", el === th);
+      el.querySelector(".arrow").innerHTML = el === th ? (sortDir === "asc" ? "&#9652;" : "&#9662;") : "&#9662;";
+    });
+    renderTable();
+  });
+});
+
+document.getElementById("prev-page").addEventListener("click", () => { page -= 1; renderTable(); });
+document.getElementById("next-page").addEventListener("click", () => { page += 1; renderTable(); });
+document.getElementById("refresh-btn").addEventListener("click", refresh);
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+{% endblock %}
